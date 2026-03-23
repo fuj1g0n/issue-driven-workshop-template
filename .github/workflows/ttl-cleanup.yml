@@ -1,0 +1,79 @@
+name: TTL Cleanup Preview Environments
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  cleanup-expired:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Find and delete expired preview slots
+        run: |
+          WEBAPP_NAME="${{ vars.AZURE_WEBAPP_NAME }}"
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          DELETED=0
+          KEPT=0
+
+          echo "Checking preview slots for: $WEBAPP_NAME"
+          echo "Current time (UTC): $NOW"
+          echo ""
+
+          # List all deployment slots
+          SLOTS=$(az webapp deployment slot list \
+            --name "$WEBAPP_NAME" \
+            --resource-group "$RG" \
+            --query "[].name" \
+            -o tsv 2>/dev/null || true)
+
+          if [ -z "$SLOTS" ]; then
+            echo "No deployment slots found."
+            exit 0
+          fi
+
+          for SLOT in $SLOTS; do
+            # Get TTLExpire tag for this slot
+            TTL_EXPIRE=$(az webapp show \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RG" \
+              --slot "$SLOT" \
+              --query "tags.TTLExpire" \
+              -o tsv 2>/dev/null || true)
+
+            if [ -z "$TTL_EXPIRE" ] || [ "$TTL_EXPIRE" = "None" ]; then
+              echo "⏭️  Skipping $SLOT (no TTLExpire tag)"
+              continue
+            fi
+
+            if [[ "$NOW" > "$TTL_EXPIRE" ]]; then
+              echo "🗑️  Deleting expired slot: $SLOT (expired: $TTL_EXPIRE)"
+              az webapp deployment slot delete \
+                --name "$WEBAPP_NAME" \
+                --resource-group "$RG" \
+                --slot "$SLOT" || true
+              DELETED=$((DELETED + 1))
+            else
+              echo "✅ Keeping slot: $SLOT (expires: $TTL_EXPIRE)"
+              KEPT=$((KEPT + 1))
+            fi
+          done
+
+          echo ""
+          echo "## 🧹 TTL Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Deleted:** ${DELETED} expired slot(s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Kept:** ${KEPT} active slot(s)" >> "$GITHUB_STEP_SUMMARY"

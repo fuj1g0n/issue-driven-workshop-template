@@ -36,6 +36,11 @@ $appServicePlan = $config.azure.appServicePlan
 $webAppName = "$($config.azure.webAppNamePrefix)-$Number"
 $storageAccount = $config.azure.storageAccount
 
+# OIDC (for PR preview environments)
+$clientId = $config.oidc.clientId
+$tenantId = $config.oidc.tenantId
+$subscriptionId = $config.oidc.subscriptionId
+
 # App Settings
 $tableName = "$($config.azure.tableNamePrefix)$Number"
 
@@ -137,6 +142,12 @@ gh variable set AZURE_WEBAPP_NAME --body $webAppName --repo "$ownerName/$newRepo
 
 Write-Host "Setting AZURE_WEBAPP_PUBLISH_PROFILE (as secret)..." -ForegroundColor Yellow
 $publishProfile | gh secret set AZURE_WEBAPP_PUBLISH_PROFILE --repo "$ownerName/$newRepoName"
+
+Write-Host "Setting OIDC variables for PR preview environments..." -ForegroundColor Yellow
+gh variable set AZURE_RESOURCE_GROUP --body $resourceGroup --repo "$ownerName/$newRepoName"
+gh variable set AZURE_CLIENT_ID --body $clientId --repo "$ownerName/$newRepoName"
+gh variable set AZURE_TENANT_ID --body $tenantId --repo "$ownerName/$newRepoName"
+gh variable set AZURE_SUBSCRIPTION_ID --body $subscriptionId --repo "$ownerName/$newRepoName"
 
 # ===========================================
 # Step 7: Trigger Initial Deployment

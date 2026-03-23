@@ -103,12 +103,31 @@ for ($i = 1; $i -le $ParticipantCount; $i++) {
 }
 
 # ===========================================
-# Step 2: Delete Azure Resources (optional)
+# Step 2: Delete Service Principal (optional)
 # ===========================================
 if ($DeleteAzureResources) {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "Step 2: Deleting Azure Resource Group" -ForegroundColor Cyan
+    Write-Host "Step 2: Deleting Service Principal" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $clientId = $config.oidc.clientId
+    if ($clientId) {
+        Write-Host "Deleting Service Principal (clientId: $clientId)..." -ForegroundColor Yellow
+        az ad app delete --id $clientId 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  Service Principal deleted" -ForegroundColor Green
+        } else {
+            Write-Host "  Service Principal not found or already deleted" -ForegroundColor Gray
+        }
+    }
+
+# ===========================================
+# Step 3: Delete Azure Resources (optional)
+# ===========================================
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Step 3: Deleting Azure Resource Group" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
     Write-Host "Deleting resource group: $resourceGroup" -ForegroundColor Yellow

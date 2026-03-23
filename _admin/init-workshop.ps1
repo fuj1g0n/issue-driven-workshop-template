@@ -124,11 +124,45 @@ az storage account create --name $StorageAccount --resource-group $ResourceGroup
 Write-Host "Azure resources created" -ForegroundColor Green
 
 # ===========================================
-# Step 2: Generate config.json
+# Step 2: Create Service Principal with OIDC
 # ===========================================
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Step 2: Generating config.json" -ForegroundColor Cyan
+Write-Host "Step 2: Creating Service Principal for OIDC" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+$spName = "sp-workshop-$suffix"
+$subscriptionId = (az account show --query id -o tsv)
+$tenantId = (az account show --query tenantId -o tsv)
+
+Write-Host "Creating Service Principal: $spName" -ForegroundColor Yellow
+$spJson = az ad sp create-for-rbac --name $spName --role Contributor --scopes "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup" --query "{clientId: appId, objectId: id}" -o json
+$sp = $spJson | ConvertFrom-Json
+$clientId = $sp.clientId
+
+Write-Host "Service Principal created (clientId: $clientId)" -ForegroundColor Green
+
+# Configure OIDC federated credentials for GitHub Actions
+Write-Host "Configuring OIDC federated credentials..." -ForegroundColor Yellow
+$appObjectId = az ad app show --id $clientId --query id -o tsv
+
+# Federated credential for pull_request events
+$prCredential = @{
+    name = "github-pr-$suffix"
+    issuer = "https://token.actions.githubusercontent.com"
+    subject = "repo:$RepoOwner/*:pull_request"
+    audiences = @("api://AzureADTokenExchange")
+} | ConvertTo-Json -Compress
+
+az ad app federated-credential create --id $appObjectId --parameters $prCredential --output none
+Write-Host "OIDC federated credential configured for pull_request events" -ForegroundColor Green
+
+# ===========================================
+# Step 3: Generate config.json
+# ===========================================
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Step 3: Generating config.json" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $config = @{
@@ -138,6 +172,11 @@ $config = @{
         storageAccount   = $StorageAccount
         webAppNamePrefix = $WebAppNamePrefix
         tableNamePrefix  = "Expenses"
+    }
+    oidc = @{
+        clientId       = $clientId
+        tenantId       = $tenantId
+        subscriptionId = $subscriptionId
     }
     github = @{
         owner        = $GitHubOwner
@@ -152,11 +191,11 @@ $config | ConvertTo-Json -Depth 3 | Set-Content -Path $configPath -Encoding UTF8
 Write-Host "config.json generated" -ForegroundColor Green
 
 # ===========================================
-# Step 3: Setup Each Participant
+# Step 4: Setup Each Participant
 # ===========================================
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Step 3: Setting Up Participants" -ForegroundColor Cyan
+Write-Host "Step 4: Setting Up Participants" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $setupScript = Join-Path $PSScriptRoot "setup-participant.ps1"

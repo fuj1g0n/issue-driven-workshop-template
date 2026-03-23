@@ -1,0 +1,179 @@
+name: Deploy Preview Environment
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  deploy-preview:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create or update deployment slot
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          SLOT_NAME="pr-${PR_NUM}"
+          WEBAPP_NAME="${{ vars.AZURE_WEBAPP_NAME }}"
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+          TTL_EXPIRE=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
+
+          # Check if slot already exists
+          EXISTS=$(az webapp deployment slot list \
+            --name "$WEBAPP_NAME" \
+            --resource-group "$RG" \
+            --query "[?name=='${SLOT_NAME}'].name" \
+            -o tsv)
+
+          if [ -z "$EXISTS" ]; then
+            echo "Creating deployment slot: $SLOT_NAME"
+            az webapp deployment slot create \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RG" \
+              --slot "$SLOT_NAME"
+
+            echo "Configuring slot app settings..."
+            az webapp config appsettings set \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RG" \
+              --slot "$SLOT_NAME" \
+              --slot-settings \
+                "AzureTableStorage__TableName=ExpensesPR${PR_NUM}" \
+              --output none
+
+            echo "Configuring 64-bit platform..."
+            az webapp config set \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RG" \
+              --slot "$SLOT_NAME" \
+              --use-32bit-worker-process false \
+              --output none
+          else
+            echo "Slot $SLOT_NAME already exists, skipping creation"
+          fi
+
+          # Update TTL tag on the slot (reset on every push)
+          az webapp deployment slot create \
+            --name "$WEBAPP_NAME" \
+            --resource-group "$RG" \
+            --slot "$SLOT_NAME" \
+            --tags "Environment=preview" "PullRequest=${PR_NUM}" "TTLExpire=${TTL_EXPIRE}" \
+            2>/dev/null || true
+
+          echo "SLOT_NAME=$SLOT_NAME" >> "$GITHUB_ENV"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Publish
+        run: dotnet publish IssueDrivenWorkshop.csproj --configuration Release --no-build --output ./publish
+
+      - name: Deploy to preview slot
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          slot-name: ${{ env.SLOT_NAME }}
+          package: ./publish
+
+      - name: Comment PR with preview URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNum = context.payload.pull_request.number;
+            const webappName = process.env.WEBAPP_NAME || '${{ vars.AZURE_WEBAPP_NAME }}';
+            const slotName = process.env.SLOT_NAME;
+            const previewUrl = `https://${webappName}-${slotName}.azurewebsites.net`;
+            const body = [
+              '## 🔍 Preview Environment',
+              '',
+              `**URL:** ${previewUrl}`,
+              '',
+              '> This environment will be automatically destroyed 1 hour after the last push, or when the PR is closed.',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNum,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Preview Environment'));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNum,
+                body,
+              });
+            }
+
+      - name: Show preview URL
+        run: |
+          echo "## 🔍 Preview Deployed!" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**URL:** https://${{ vars.AZURE_WEBAPP_NAME }}-${{ env.SLOT_NAME }}.azurewebsites.net" >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup-preview:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete deployment slot
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          SLOT_NAME="pr-${PR_NUM}"
+          WEBAPP_NAME="${{ vars.AZURE_WEBAPP_NAME }}"
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+
+          echo "Deleting deployment slot: $SLOT_NAME"
+          az webapp deployment slot delete \
+            --name "$WEBAPP_NAME" \
+            --resource-group "$RG" \
+            --slot "$SLOT_NAME" || true
+
+          echo "## 🧹 Preview Environment Cleaned Up" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deleted slot **${SLOT_NAME}** for PR #${PR_NUM}." >> "$GITHUB_STEP_SUMMARY"

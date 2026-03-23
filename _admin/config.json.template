@@ -6,6 +6,11 @@
     "webAppNamePrefix": "app-workshop",
     "tableNamePrefix": "Expenses"
   },
+  "oidc": {
+    "clientId": "<SERVICE_PRINCIPAL_CLIENT_ID>",
+    "tenantId": "<AZURE_AD_TENANT_ID>",
+    "subscriptionId": "<AZURE_SUBSCRIPTION_ID>"
+  },
   "github": {
     "owner": "<YOUR_GITHUB_ORG_OR_USERNAME>",
     "templateRepo": "<YOUR_GITHUB_ORG_OR_USERNAME>/issue-driven-workshop-template",
